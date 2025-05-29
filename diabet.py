@@ -1,462 +1,1064 @@
-# Gerekli Kütüphane ve Fonksiyonlar
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score,roc_auc_score
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.model_selection import GridSearchCV, cross_validate
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.preprocessing import StandardScaler
-import warnings
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
+from sklearn.inspection import permutation_importance
 import joblib
-warnings.simplefilter(action="ignore"),
+import warnings
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import time
+from IPython.display import display, HTML
 
+# Suppress warnings
+warnings.simplefilter(action="ignore")
+
+# Setting visualization style
+plt.style.use('fivethirtyeight')
+sns.set_palette("viridis")
+
+# Set display options
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', None)
-pd.set_option('display.max_rows', 20)
 pd.set_option('display.float_format', lambda x: '%.3f' % x)
 
-df = pd.read_csv("diabetes.csv")
-df.head()
+# Create a class to handle the entire process for better organization
+class DiabetesPredictionAnalysis:
+    def __init__(self, data_path="diabetes.csv"):
+        self.data_path = data_path
+        self.df = None
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.X_train_scaled = None
+        self.X_test_scaled = None
+        self.model = None
+        self.scaler = None
+        self.medians = {}
+        self.feature_importance = None
+        self.cv_scores = None
 
-def check_df(dataframe, head=5):
-    print("##################### Shape #####################")
-    print(dataframe.shape)
-    print("##################### Types #####################")
-    print(dataframe.dtypes)
-    print("##################### Head #####################")
-    print(dataframe.head(head))
-    print("##################### Tail #####################")
-    print(dataframe.tail(head))
-    print("##################### NA #####################")
-    print(dataframe.isnull().sum()) #eksik deger var mı? varsa kac tane?
-    print("##################### Quantiles #####################")
-    print(dataframe.quantile([0, 0.05, 0.50, 0.95, 0.99, 1]).T) # sayısal değişkenlerin ceyrekliklerinin incelenmesi
+    def print_section_header(self, title):
+        """Print a formatted section header"""
+        print("\n" + "="*80)
+        print(f" {title} ".center(80, "="))
+        print("="*80 + "\n")
 
-check_df(df)
+    def load_data(self):
+        """Load the diabetes dataset"""
+        self.print_section_header("Loading and Exploring Data")
+        start_time = time.time()
 
-df.head()
+        print("📊 Loading diabetes dataset...")
+        self.df = pd.read_csv(self.data_path)
 
-def grab_col_names(dataframe, cat_th=10, car_th=20):
-    """
+        print(f"✅ Data loaded successfully! Shape: {self.df.shape}")
+        print(f"⏱️ Time taken: {time.time() - start_time:.2f} seconds")
 
-    Veri setindeki kategorik, numerik ve kategorik fakat kardinal değişkenlerin isimlerini verir.
-    Not: Kategorik değişkenlerin içerisine numerik görünümlü kategorik değişkenler de dahildir.
+        # Display basic information about the dataset
+        print("\n📋 First 5 rows of the dataset:")
+        display(self.df.head())
 
-    Parameters
-    ------
-        dataframe: dataframe
-                Değişken isimleri alınmak istenilen dataframe
-        cat_th: int, optional
-                numerik fakat kategorik olan değişkenler için sınıf eşik değeri
-        car_th: int, optional
-                kategorik fakat kardinal değişkenler için sınıf eşik değeri
+        print("\n📊 Dataset information:")
+        display(pd.DataFrame({
+            "Column": self.df.columns,
+            "Data Type": self.df.dtypes,
+            "Non-Null Count": self.df.count(),
+            "Null Count": self.df.isnull().sum(),
+            "Unique Values": [self.df[col].nunique() for col in self.df.columns],
+            "Min Value": [self.df[col].min() for col in self.df.columns],
+            "Max Value": [self.df[col].max() for col in self.df.columns]
+        }))
 
-    Returns
-    ------
-        cat_cols: list
-                Kategorik değişken listesi
-        num_cols: list
-                Numerik değişken listesi
-        cat_but_car: list
-                Kategorik görünümlü kardinal değişken listesi
+        # Display summary statistics
+        print("\n📊 Summary statistics:")
+        display(self.df.describe().T)
 
-    Examples
-    ------
-        import seaborn as sns
-        df = sns.load_dataset("iris")
-        print(grab_col_names(df))
+        return self
 
+    def visualize_data_distributions(self):
+        """Visualize distributions of variables in the dataset"""
+        self.print_section_header("Data Distribution Analysis")
 
-    Notes
-    ------
-        cat_cols + num_cols + cat_but_car = toplam değişken sayısı
-        num_but_cat cat_cols'un içerisinde.
+        # Outcome distribution
+        print("🔍 Analyzing outcome distribution...")
+        outcome_counts = self.df['Outcome'].value_counts()
 
-    """
-    # cat_cols, cat_but_car
-    cat_cols = [col for col in dataframe.columns if dataframe[col].dtypes == "O"]
-    num_but_cat = [col for col in dataframe.columns if dataframe[col].nunique() < cat_th and dataframe[col].dtypes != "O"] # 0,1,2
-    cat_but_car = [col for col in dataframe.columns if dataframe[col].nunique() > car_th and dataframe[col].dtypes == "O"] # name
-    cat_cols = cat_cols + num_but_cat
-    cat_cols = [col for col in cat_cols if col not in cat_but_car] # cat_cols tüm object  veri tipini tuttugu için içerisinde cat_but_car bulunabilir.
+        plt.figure(figsize=(10, 6))
+        sns.countplot(x='Outcome', data=self.df, palette=['#2ecc71', '#e74c3c'])
+        plt.title('Distribution of Diabetes Outcome (0: No Diabetes, 1: Diabetes)', fontsize=15)
+        plt.xlabel('Outcome', fontsize=12)
+        plt.ylabel('Count', fontsize=12)
 
-    # num_cols
-    num_cols = [col for col in dataframe.columns if dataframe[col].dtypes != "O"]
-    num_cols = [col for col in num_cols if col not in num_but_cat] #numerik_gorunumlu kategorikler hariç
-
-    print(f"Observations: {dataframe.shape[0]}") # satır
-    print(f"Variables: {dataframe.shape[1]}") # sutun
-    print(f'cat_cols: {len(cat_cols)}') # categorik degişken sayısı
-    print(f'num_cols: {len(num_cols)}') # numerik değişkenler
-    print(f'cat_but_car: {len(cat_but_car)}') # categorik fakat kardinal
-    print(f'num_but_cat: {len(num_but_cat)}') # numerik görünümlü kategorik
-
-    return cat_cols, num_cols, cat_but_car
-
-cat_cols, num_cols, cat_but_car = grab_col_names(df)
-
-cat_cols
-num_cols
-cat_but_car
-
-# KATEGORİK DEĞİŞKENLERİN ANALİZİ
-def cat_summary(dataframe, col_name, plot=True): # plot:true olursa if çalışır.
-    print(pd.DataFrame({col_name: dataframe[col_name].value_counts(),  #değişkende hangi degerden kacar adet var?
-                        "Ratio": 100 * dataframe[col_name].value_counts() / len(dataframe)})) # deger adetlerini toplam deger sayısına bölümü oran verir.
-    print("##########################################")
-    if plot:
-        sns.countplot(x=dataframe[col_name], data=dataframe)
+        # Add percentage labels
+        total = len(self.df)
+        for i, count in enumerate(outcome_counts):
+            percentage = count / total * 100
+            plt.annotate(f'{count} ({percentage:.1f}%)',
+                        (i, count),
+                        ha='center',
+                        va='bottom',
+                        fontsize=12)
         plt.show()
 
-# kategorik değişkenimde deniyorum.
-cat_summary(df, "Outcome")
+        # Distribution of numeric features
+        print("\n🔍 Analyzing feature distributions...")
 
-for col in cat_cols:
-    cat_summary(df, col)
+        numeric_cols = ['Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness',
+                        'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age']
 
-# NUMERİK DEĞİŞKENLERİN ANALİZİ
+        fig, axes = plt.subplots(4, 2, figsize=(18, 20))
+        axes = axes.flatten()
 
-def num_summary(dataframe, numerical_col, plot=False):  # plot:true olursa if çalışır.
-    quantiles = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.99] # hangi ceyreklikleri istiyorum?
-    print(dataframe[numerical_col].describe(quantiles).T) # istedigim ceyreklikler bazında describe göz atıyorum.
+        for i, col in enumerate(numeric_cols):
+            # Histogram with KDE
+            sns.histplot(data=self.df, x=col, hue='Outcome', kde=True, ax=axes[i],
+                         palette=['#2ecc71', '#e74c3c'], alpha=0.6, bins=25)
+            axes[i].set_title(f'Distribution of {col} by Diabetes Outcome', fontsize=14)
+            axes[i].set_xlabel(col, fontsize=12)
+            axes[i].set_ylabel('Count', fontsize=12)
+            axes[i].legend(['No Diabetes', 'Diabetes'])
 
-    if plot:
-        dataframe[numerical_col].hist(bins=20)
-        plt.xlabel(numerical_col)
-        plt.title(numerical_col)
+        plt.tight_layout()
         plt.show()
 
-for col in num_cols: # num_cols: grab_col_names fonksiyonundan elde ettigim numerik değişkenlerim.
-    num_summary(df, col, plot=False)
+        # Boxplots to identify potential outliers
+        print("\n🔍 Identifying potential outliers using boxplots...")
 
+        fig, axes = plt.subplots(4, 2, figsize=(18, 20))
+        axes = axes.flatten()
 
-# NUMERİK DEĞİŞKENLERİN TARGET GÖRE ANALİZİ
+        for i, col in enumerate(numeric_cols):
+            sns.boxplot(x='Outcome', y=col, data=self.df, ax=axes[i], palette=['#2ecc71', '#e74c3c'])
+            axes[i].set_title(f'Boxplot of {col} by Diabetes Outcome', fontsize=14)
+            axes[i].set_xlabel('Outcome (0: No Diabetes, 1: Diabetes)', fontsize=12)
+            axes[i].set_ylabel(col, fontsize=12)
 
-# numerik degişkenlerin target değişkene göre ortalamalarını inceleyelim:
-def target_summary_with_num(dataframe, target, numerical_col):
-    print(dataframe.groupby(target).agg({numerical_col: "mean"}), end="\n\n\n")
+        plt.tight_layout()
+        plt.show()
 
-for col in num_cols:
-    target_summary_with_num(df, "Outcome", col)
+        # Check for zero values that should be missing
+        print("\n🔍 Analyzing zero values that might represent missing data...")
+        zero_cols = ['Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI']
 
-# KORELASYON
+        zero_counts = {col: (self.df[col] == 0).sum() for col in zero_cols}
+        zero_percentages = {col: (self.df[col] == 0).mean() * 100 for col in zero_cols}
 
-df.corr()
+        zero_df = pd.DataFrame({
+            'Column': zero_cols,
+            'Zero Count': [zero_counts[col] for col in zero_cols],
+            'Zero Percentage': [zero_percentages[col] for col in zero_cols]
+        })
 
-# Korelasyon Matrisi
-f, ax = plt.subplots(figsize=[18, 13])
-sns.heatmap(df.corr(), annot=True, fmt=".2f", ax=ax, cmap="magma")
-ax.set_title("Correlation Matrix", fontsize=20)
-plt.show()
+        display(zero_df)
 
-# BASE MODEL KURULUMU
+        # Visualize zero value counts
+        plt.figure(figsize=(12, 6))
+        bars = plt.bar(zero_df['Column'], zero_df['Zero Count'], color='#3498db')
+        plt.title('Count of Zero Values in Features (Potential Missing Data)', fontsize=15)
+        plt.xlabel('Feature', fontsize=12)
+        plt.ylabel('Count of Zeros', fontsize=12)
 
-# Bağımsız ve bağımlı değişkenlerin belirlenmesi
-X = df.drop("Outcome", axis=1)  # Outcome haricindeki tüm sütunlar
-y = df["Outcome"]  # Hedef değişken
+        # Add value labels
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                    f'{height}', ha='center', va='bottom', fontsize=12)
 
-# Eğitim ve test setlerinin oluşturulması
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42)
+        plt.tight_layout()
+        plt.show()
 
-# Standartlaştırma (isteğe bağlı, eğer yapmazsan bazı algoritmalar olumsuz etkilenebilir)
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+        return self
 
-# Modelin eğitilmesi ve tahminler
-rf_model = RandomForestClassifier(random_state=46).fit(X_train, y_train)
-y_pred = rf_model.predict(X_test)
+    def analyze_correlations(self):
+        """Analyze correlations between variables"""
+        self.print_section_header("Correlation Analysis")
 
-# Performans metriklerinin hesaplanması
-print(f"Accuracy: {round(accuracy_score(y_pred, y_test), 2)}")
-print(f"Recall: {round(recall_score(y_pred, y_test), 3)}")
-print(f"Precision: {round(precision_score(y_pred, y_test), 2)}")
-print(f"F1: {round(f1_score(y_pred, y_test), 2)}")
-print(f"AUC: {round(roc_auc_score(y_pred, y_test), 2)}")
-# Accuracy: 0.77
-# Recall: 0.706 # pozitif sınıfın ne kadar başarılı tahmin edildiği
-# Precision: 0.59 # Pozitif sınıf olarak tahmin edilen değerlerin başarısı
-# F1: 0.64
-# Auc: 0.75
+        print("🔍 Analyzing correlations between features...")
 
-def plot_importance(model, features, num=len(X), save=False):
-    feature_imp = pd.DataFrame({'Value': model.feature_importances_, 'Feature': features.columns})
-    plt.figure(figsize=(10, 10))
-    sns.set(font_scale=1)
-    sns.barplot(x="Value", y="Feature", data=feature_imp.sort_values(by="Value",
-                                                                     ascending=False)[0:num])
-    plt.title('Features')
-    plt.tight_layout()
-    plt.show()
-    if save:
-        plt.savefig('importances.png')
+        # Calculate correlation matrix
+        corr_matrix = self.df.corr()
 
-plot_importance(rf_model, X)
+        # Plot heatmap
+        plt.figure(figsize=(12, 10))
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+        cmap = sns.diverging_palette(230, 20, as_cmap=True)
 
-#FEATURE ENGINEERING
+        sns.heatmap(corr_matrix, mask=mask, cmap=cmap, annot=True, fmt=".2f",
+                   linewidths=0.5, center=0, square=True, vmin=-1, vmax=1)
+        plt.title('Correlation Matrix of Features', fontsize=16)
+        plt.tight_layout()
+        plt.show()
 
-# EKSİK DEĞER ANALİZİ
+        # Plot correlation with target
+        target_corr = corr_matrix['Outcome'].drop('Outcome').sort_values(ascending=False)
 
-df.isnull().sum() # eksik degerler yoktu. Fakat sıfır olamayacak değişkenlere sıfır atanmıstı.
-df.describe()
-# Bir insanda Pregnancies ve Outcome dışındaki değişken değerleri 0 olamayacağı bilinmektedir.
-# Bundan dolayı bu değerlerle ilgili aksiyon kararı alınmalıdır. 0 olan değerlere NaN atanabilir .
+        plt.figure(figsize=(12, 8))
+        bars = plt.bar(target_corr.index, target_corr.values, color=plt.cm.viridis(np.linspace(0, 1, len(target_corr))))
+        plt.title('Correlation of Features with Diabetes Outcome', fontsize=16)
+        plt.xlabel('Feature', fontsize=12)
+        plt.ylabel('Correlation Coefficient', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
 
-# minimum degeri sıfır olamayacak değişkenler yakalanıyor.
-# kategorik değişkenler hariç bırakılıyor.
-zero_columns = [col for col in df.columns if (df[col].min() == 0 and col not in ["Pregnancies", "Outcome"])]
+        # Add value labels
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2.,
+                    height + 0.01 if height >= 0 else height - 0.03,
+                    f'{height:.2f}',
+                    ha='center', va='bottom' if height >= 0 else 'top',
+                    fontsize=10)
 
-zero_columns
+        plt.tight_layout()
+        plt.show()
 
-# Gözlem birimlerinde 0 olan degiskenlerin her birisine gidip 0 iceren gozlem degerlerini NaN ile değiştirdik.
+        # Pair plot for the most correlated features
+        print("\n🔍 Creating pair plot for the top correlated features with Outcome...")
+        top_features = target_corr.abs().nlargest(3).index.tolist()
+        top_features.append('Outcome')
 
-# where ile eger ki şart saglanıyorsa NAN yazacagım, saglanmıyorsa oldugu gibi yazacagım.
-for col in zero_columns:
-    df[col] = np.where(df[col] == 0, np.nan, df[col])
+        sns.pairplot(self.df[top_features], hue='Outcome', palette=['#2ecc71', '#e74c3c'],
+                    diag_kind='kde', plot_kws={'alpha': 0.6})
+        plt.suptitle('Pair Plot of Top Correlated Features', y=1.02, fontsize=16)
+        plt.tight_layout()
+        plt.show()
 
-# Eksik Gözlem Analizi
-df.isnull().sum()
+        return self
 
-# artık eksik degerleri (NAN) incelebilirz.
-def missing_values_table(dataframe, na_name=False):
-    na_columns = [col for col in dataframe.columns if dataframe[col].isnull().sum() > 0] # eksik deger varsa na_columns değişkeninde tutulur.
-    n_miss = dataframe[na_columns].isnull().sum().sort_values(ascending=False) # sıralamanın sebebi ilk olarak fazla eksik degere sahip eğişkenleri görmek istememiz.
-    ratio = (dataframe[na_columns].isnull().sum() / dataframe.shape[0] * 100).sort_values(ascending=False) # eksik degerlerin tüm değerler içerisindeki oranı
-    missing_df = pd.concat([n_miss, np.round(ratio, 2)], axis=1, keys=['n_miss', 'ratio']) # kac deger var ve oranını birleştiriyoruz.
-    print(missing_df, end="\n")
-    if na_name: #na_name true ise degeri döndürür.
-        return na_columns
+    def preprocess_data(self):
+        """Preprocess the data by handling missing values and normalization"""
+        self.print_section_header("Data Preprocessing")
+        start_time = time.time()
 
-na_columns = missing_values_table(df, na_name=True)
+        print("🔧 Handling missing values (zeros in medical features)...")
 
-# Eksik Değerlerin Bağımlı Değişken ile İlişkisinin İncelenmesi
-# amacımız eksik degerler ile var olan degerlerin karsılastırmasını yapmak olacak.
+        # Get columns that shouldn't have zeros (medically unlikely)
+        zero_columns = ['Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI', 'DiabetesPedigreeFunction']
 
-def missing_vs_target(dataframe, target, na_columns):
-    temp_df = dataframe.copy()
-    for col in na_columns: # eksik degeri olan değişkenlerde geziyoruz.
-        temp_df[col + '_NA_FLAG'] = np.where(temp_df[col].isnull(), 1, 0) # temp_df[col].isnull() degeri true false olarak döndürür. true ise 1: false ise 0 yazar.
-        # bu işlemin amacı eksik olan degerlerde var olan degerleri ayrıstırmaktır.
-    na_flags = temp_df.loc[:, temp_df.columns.str.contains("NA")].columns # NA barındıran değişkenlerde gezmek istiyorum. yeni değişkene atadım.
-    for col in na_flags:
-        print(pd.DataFrame({"TARGET_MEAN": temp_df.groupby(col)[target].mean(),
-                            "Count": temp_df.groupby(col)[target].count()}), end="\n\n\n")
+        # Replace zeros with NaN for these columns
+        for col in zero_columns:
+            original_zeros = (self.df[col] == 0).sum()
+            self.df[col] = np.where(self.df[col] == 0, np.nan, self.df[col])
+            current_nans = self.df[col].isna().sum()
+            print(f"  - {col}: Replaced {original_zeros} zeros with NaN")
 
-missing_vs_target(df, "Outcome", na_columns)
-# Eksikse 1 değilse 0.
+        # Calculate and store median values for each column
+        print("\n🔧 Calculating median values for imputation...")
+        for col in zero_columns:
+            self.medians[col] = self.df[col].median()
+            print(f"  - {col} median: {self.medians[col]:.2f}")
 
-# Eksik Değerlerin Doldurulması
-for col in zero_columns:
-    df.loc[df[col].isnull(), col] = df[col].median()
+        # Fill missing values with calculated medians
+        print("\n🔧 Imputing missing values with medians...")
+        for col in zero_columns:
+            self.df[col].fillna(self.medians[col], inplace=True)
 
-df.isnull().sum()
+        # Save medians for prediction
+        joblib.dump(self.medians, "diabetes_medians.pkl")
+        print("✅ Saved median values to 'diabetes_medians.pkl'")
 
-df.describe()
+        # Split data into features and target
+        print("\n🔧 Splitting data into features and target...")
+        X = self.df.drop("Outcome", axis=1)
+        y = self.df["Outcome"]
 
-# AYKIRI DEĞER ANALİZİ
+        # Split data into training and testing sets
+        print("\n🔧 Splitting data into training and testing sets...")
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
 
-# aykırı degerler için limit belirleme
-def outlier_thresholds(dataframe, col_name, q1=0.05, q3=0.95):
-    quartile1 = dataframe[col_name].quantile(q1)
-    quartile3 = dataframe[col_name].quantile(q3)
-    interquantile_range = quartile3 - quartile1
-    up_limit = quartile3 + 1.5 * interquantile_range
-    low_limit = quartile1 - 1.5 * interquantile_range
-    return low_limit, up_limit
+        print(f"  - Training set: {self.X_train.shape[0]} samples")
+        print(f"  - Testing set: {self.X_test.shape[0]} samples")
 
-# aykırı deger var mı yok mu?
-def check_outlier(dataframe, col_name):
-    low_limit, up_limit = outlier_thresholds(dataframe, col_name)
-    if dataframe[(dataframe[col_name] > up_limit) | (dataframe[col_name] < low_limit)].any(axis=None):
-        return True
+        # Check class distribution in splits
+        train_dist = pd.Series(self.y_train).value_counts(normalize=True).to_dict()
+        test_dist = pd.Series(self.y_test).value_counts(normalize=True).to_dict()
+
+        print(f"  - Training set class distribution: {train_dist}")
+        print(f"  - Testing set class distribution: {test_dist}")
+
+        # Standardize features
+        print("\n🔧 Standardizing features...")
+        self.scaler = StandardScaler()
+        self.X_train_scaled = self.scaler.fit_transform(self.X_train)
+        self.X_test_scaled = self.scaler.transform(self.X_test)
+
+        # Save the scaler
+        joblib.dump(self.scaler, "diabetes_scaler.pkl")
+        print("✅ Saved scaler to 'diabetes_scaler.pkl'")
+
+        print(f"\n⏱️ Preprocessing completed in {time.time() - start_time:.2f} seconds")
+
+        return self
+
+    def feature_selection_analysis(self):
+        """Analyze feature importance for feature selection"""
+        self.print_section_header("Feature Selection Analysis")
+
+        print("🔍 Training a preliminary model for feature importance...")
+
+        # Train a preliminary Random Forest model
+        prelim_model = RandomForestClassifier(
+            n_estimators=100,
+            random_state=42,
+            n_jobs=-1
+        )
+        prelim_model.fit(self.X_train_scaled, self.y_train)
+
+        # Get feature importance
+        importance = prelim_model.feature_importances_
+        feature_names = self.X_train.columns
+
+        # Create DataFrame for better visualization
+        feature_importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': importance
+        }).sort_values('Importance', ascending=False)
+
+        print("\n📊 Feature importance from preliminary Random Forest model:")
+        display(feature_importance_df)
+
+        # Plot feature importance
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='Importance', y='Feature', data=feature_importance_df, palette='viridis')
+        plt.title('Feature Importance from Random Forest', fontsize=16)
+        plt.xlabel('Importance', fontsize=12)
+        plt.ylabel('Feature', fontsize=12)
+        plt.tight_layout()
+        plt.show()
+
+        # Perform permutation importance (more reliable)
+        print("\n🔍 Calculating permutation importance (more reliable)...")
+
+        perm_importance = permutation_importance(
+            prelim_model, self.X_test_scaled, self.y_test,
+            n_repeats=10, random_state=42, n_jobs=-1
+        )
+
+        # Create DataFrame for permutation importance
+        perm_importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': perm_importance.importances_mean,
+            'Std': perm_importance.importances_std
+        }).sort_values('Importance', ascending=False)
+
+        print("\n📊 Permutation importance results:")
+        display(perm_importance_df)
+
+        # Plot permutation importance
+        plt.figure(figsize=(12, 8))
+        plt.errorbar(
+            x=perm_importance_df['Importance'],
+            y=range(len(perm_importance_df)),
+            xerr=perm_importance_df['Std'],
+            fmt='o',
+            capsize=5
+        )
+        plt.yticks(range(len(perm_importance_df)), perm_importance_df['Feature'])
+        plt.title('Permutation Feature Importance with Standard Deviation', fontsize=16)
+        plt.xlabel('Mean Decrease in Accuracy', fontsize=12)
+        plt.ylabel('Feature', fontsize=12)
+        plt.grid(axis='x', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.show()
+
+        return self
+
+    def train_model(self):
+        """Train the diabetes prediction model"""
+        self.print_section_header("Model Training")
+        start_time = time.time()
+
+        print("🧠 Training Random Forest model with improved hyperparameters...")
+
+        # Define the Random Forest model with optimized hyperparameters
+        self.model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            class_weight='balanced',  # Handle class imbalance
+            random_state=42,
+            n_jobs=-1  # Use all available cores
+        )
+
+        # Train the model
+        self.model.fit(self.X_train_scaled, self.y_train)
+
+        # Save the trained model
+        joblib.dump(self.model, "diabetes_model.pkl")
+        print("✅ Saved model to 'diabetes_model.pkl'")
+
+        # Perform cross-validation to get a better estimate of model performance
+        print("\n🔍 Performing 5-fold cross-validation...")
+
+        cv_scores = cross_val_score(
+            self.model, self.X_train_scaled, self.y_train,
+            cv=5, scoring='accuracy', n_jobs=-1
+        )
+
+        self.cv_scores = cv_scores
+        print(f"  - Cross-validation scores: {cv_scores}")
+        print(f"  - Mean CV accuracy: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+
+        print(f"\n⏱️ Model training completed in {time.time() - start_time:.2f} seconds")
+
+        return self
+
+    def hyperparameter_tuning(self, quick=True):
+        """Perform hyperparameter tuning to find the best model"""
+        self.print_section_header("Hyperparameter Tuning")
+        start_time = time.time()
+
+        if quick:
+            print("🔧 Performing quick hyperparameter tuning...")
+            param_grid = {
+                'n_estimators': [100, 200],
+                'max_depth': [None, 10],
+                'min_samples_split': [2, 5],
+                'min_samples_leaf': [1, 2]
+            }
+        else:
+            print("🔧 Performing comprehensive hyperparameter tuning (this may take a while)...")
+            param_grid = {
+                'n_estimators': [100, 200, 300],
+                'max_depth': [None, 5, 10, 15, 20],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4],
+                'bootstrap': [True, False],
+                'class_weight': [None, 'balanced']
+            }
+
+        # Create a GridSearchCV object
+        grid_search = GridSearchCV(
+            RandomForestClassifier(random_state=42),
+            param_grid=param_grid,
+            cv=5,
+            scoring='f1',  # F1 score is good for imbalanced data
+            n_jobs=-1,
+            verbose=1
+        )
+
+        # Fit the grid search
+        grid_search.fit(self.X_train_scaled, self.y_train)
+
+        # Get the best parameters and best score
+        print(f"\n✅ Best parameters found: {grid_search.best_params_}")
+        print(f"✅ Best cross-validation score: {grid_search.best_score_:.4f}")
+
+        # Update model with best parameters
+        self.model = grid_search.best_estimator_
+
+        # Save the tuned model
+        joblib.dump(self.model, "diabetes_model_tuned.pkl")
+        print("✅ Saved tuned model to 'diabetes_model_tuned.pkl'")
+
+        print(f"\n⏱️ Hyperparameter tuning completed in {time.time() - start_time:.2f} seconds")
+
+        return self
+
+    def evaluate_model(self):
+        """Evaluate the trained model"""
+        self.print_section_header("Model Evaluation")
+
+        print("🔍 Making predictions on test set...")
+        y_pred = self.model.predict(self.X_test_scaled)
+        y_pred_proba = self.model.predict_proba(self.X_test_scaled)[:, 1]
+
+        # Calculate performance metrics
+        print("\n📊 Model performance metrics:")
+        accuracy = accuracy_score(self.y_test, y_pred)
+        precision = precision_score(self.y_test, y_pred)
+        recall = recall_score(self.y_test, y_pred)
+        f1 = f1_score(self.y_test, y_pred)
+        auc_score = roc_auc_score(self.y_test, y_pred_proba)
+
+        metrics_df = pd.DataFrame({
+            'Metric': ['Accuracy', 'Precision', 'Recall', 'F1 Score', 'AUC'],
+            'Value': [accuracy, precision, recall, f1, auc_score]
+        })
+
+        display(metrics_df)
+
+        # Confusion matrix
+        print("\n📊 Confusion matrix:")
+        cm = confusion_matrix(self.y_test, y_pred)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=['No Diabetes', 'Diabetes'],
+                   yticklabels=['No Diabetes', 'Diabetes'])
+        plt.xlabel('Predicted Label', fontsize=12)
+        plt.ylabel('True Label', fontsize=12)
+        plt.title('Confusion Matrix', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+
+        # Calculate confusion matrix metrics
+        tn, fp, fn, tp = cm.ravel()
+        specificity = tn / (tn + fp)
+
+        print(f"\n📊 Additional metrics:")
+        print(f"  - True Positives (TP): {tp}")
+        print(f"  - False Positives (FP): {fp}")
+        print(f"  - True Negatives (TN): {tn}")
+        print(f"  - False Negatives (FN): {fn}")
+        print(f"  - Sensitivity/Recall: {recall:.4f}")
+        print(f"  - Specificity: {specificity:.4f}")
+        print(f"  - Precision: {precision:.4f}")
+
+        # Classification report
+        print("\n📊 Classification report:")
+        report = classification_report(self.y_test, y_pred, target_names=['No Diabetes', 'Diabetes'])
+        print(report)
+
+        # ROC curve
+        print("\n📊 ROC curve:")
+        fpr, tpr, _ = roc_curve(self.y_test, y_pred_proba)
+        roc_auc = auc(fpr, tpr)
+
+        plt.figure(figsize=(10, 8))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.4f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate', fontsize=12)
+        plt.ylabel('True Positive Rate', fontsize=12)
+        plt.title('Receiver Operating Characteristic (ROC) Curve', fontsize=16)
+        plt.legend(loc="lower right")
+        plt.grid(linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.show()
+
+        # Feature importance from the final model
+        print("\n📊 Feature importance from the final model:")
+        feature_importance = pd.DataFrame({
+            'Feature': self.X_train.columns,
+            'Importance': self.model.feature_importances_
+        }).sort_values('Importance', ascending=False)
+
+        self.feature_importance = feature_importance
+        display(feature_importance)
+
+        plt.figure(figsize=(12, 8))
+        sns.barplot(x='Importance', y='Feature', data=feature_importance, palette='viridis')
+        plt.title('Feature Importance from Final Model', fontsize=16)
+        plt.xlabel('Importance', fontsize=12)
+        plt.ylabel('Feature', fontsize=12)
+        plt.tight_layout()
+        plt.show()
+
+        return self
+
+    def analyze_misclassifications(self):
+        """Analyze misclassified instances"""
+        self.print_section_header("Misclassification Analysis")
+
+        print("🔍 Analyzing misclassified instances...")
+
+        # Get predictions
+        y_pred = self.model.predict(self.X_test_scaled)
+        y_pred_proba = self.model.predict_proba(self.X_test_scaled)[:, 1]
+
+        # Identify misclassified instances
+        misclassified = self.X_test.copy()
+        misclassified['Actual'] = self.y_test.values
+        misclassified['Predicted'] = y_pred
+        misclassified['Probability'] = y_pred_proba
+        misclassified['Misclassified'] = misclassified['Actual'] != misclassified['Predicted']
+
+        # Filter misclassified instances
+        misclassified_df = misclassified[misclassified['Misclassified']]
+
+        print(f"\n📊 Number of misclassified instances: {len(misclassified_df)} out of {len(self.X_test)} test instances")
+        print(f"📊 Misclassification rate: {len(misclassified_df) / len(self.X_test):.4f}")
+
+        if len(misclassified_df) > 0:
+            # Display misclassified instances
+            print("\n📊 Sample of misclassified instances:")
+            display(misclassified_df.head())
+
+            # Analyze misclassifications by class
+            false_positives = misclassified_df[misclassified_df['Actual'] == 0]
+            false_negatives = misclassified_df[misclassified_df['Actual'] == 1]
+
+            print(f"\n📊 False Positives (predicted diabetes, but actually no diabetes): {len(false_positives)}")
+            print(f"📊 False Negatives (predicted no diabetes, but actually has diabetes): {len(false_negatives)}")
+
+            # Compare feature distributions between correctly and incorrectly classified instances
+            print("\n🔍 Comparing feature distributions between correctly and incorrectly classified instances...")
+
+            for col in self.X_test.columns:
+                plt.figure(figsize=(12, 6))
+
+                # Create a more detailed DataFrame for plotting
+                plot_df = misclassified.copy()
+                plot_df['Classification'] = 'Correctly Classified'
+                plot_df.loc[plot_df['Misclassified'], 'Classification'] = 'Misclassified'
+
+                # Split by actual class
+                plot_df_0 = plot_df[plot_df['Actual'] == 0]
+                plot_df_1 = plot_df[plot_df['Actual'] == 1]
+
+                # Create subplots
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+                # Plot for Actual Class 0
+                sns.boxplot(x='Classification', y=col, data=plot_df_0, ax=ax1, palette=['#2ecc71', '#e74c3c'])
+                ax1.set_title(f'{col} Distribution for Actual Class 0 (No Diabetes)', fontsize=14)
+                ax1.set_xlabel('Classification Result', fontsize=12)
+                ax1.set_ylabel(col, fontsize=12)
+
+                # Plot for Actual Class 1
+                sns.boxplot(x='Classification', y=col, data=plot_df_1, ax=ax2, palette=['#2ecc71', '#e74c3c'])
+                ax2.set_title(f'{col} Distribution for Actual Class 1 (Diabetes)', fontsize=14)
+                ax2.set_xlabel('Classification Result', fontsize=12)
+                ax2.set_ylabel(col, fontsize=12)
+
+                plt.tight_layout()
+                plt.show()
+        else:
+            print("✅ No misclassified instances found!")
+
+        return self
+
+    def create_prediction_function(self):
+        """Create and save the prediction function"""
+        self.print_section_header("Creating Prediction Function")
+
+        print("📝 Creating prediction function file...")
+
+        with open("predict_diabetes.py", "w") as f:
+            f.write("""
+import numpy as np
+import pandas as pd
+import joblib
+
+def predict_diabetes(data):
+    \"\"\"
+    Predict diabetes for a given set of features
+
+    Parameters:
+    data (dict): Dictionary with keys - 'Pregnancies', 'Glucose', 'BloodPressure',
+                'SkinThickness', 'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age'
+
+    Returns:
+    dict: Dictionary with prediction results
+    \"\"\"
+    # Load model and preprocessing components
+    model = joblib.load("diabetes_model.pkl")
+    scaler = joblib.load("diabetes_scaler.pkl")
+    medians = joblib.load("diabetes_medians.pkl")
+
+    # Convert input to DataFrame
+    if isinstance(data, dict):
+        df = pd.DataFrame([data])
     else:
-        return False
+        df = pd.DataFrame([data], columns=['Pregnancies', 'Glucose', 'BloodPressure',
+                                         'SkinThickness', 'Insulin
+            , 'BMI',
+                                         'DiabetesPedigreeFunction', 'Age'])
 
-# aykırı degerleri baskılama
-def replace_with_thresholds(dataframe, variable, q1=0.05, q3=0.95):
-    low_limit, up_limit = outlier_thresholds(dataframe, variable, q1=0.05, q3=0.95)
-    dataframe.loc[(dataframe[variable] < low_limit), variable] = low_limit
-    dataframe.loc[(dataframe[variable] > up_limit), variable] = up_limit
+    # Handle missing/zero values
+    zero_columns = ['Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI', 'DiabetesPedigreeFunction']
+    for col in zero_columns:
+        df[col] = np.where(df[col] == 0, np.nan, df[col])
+        df[col].fillna(medians[col], inplace=True)
 
-sns.boxplot(x=df["Insulin"])
+    # Standardize features
+    df_scaled = scaler.transform(df)
 
-# Aykırı Değer Analizi ve Baskılama İşlemi
-for col in df.columns:
-    print(col, check_outlier(df, col))
-    if check_outlier(df, col):
-        replace_with_thresholds(df, col)
+    # Make prediction
+    prediction = model.predict(df_scaled)
+    probability = model.predict_proba(df_scaled)[:, 1]
 
-for col in df.columns:
-    print(col, check_outlier(df, col))
-
-# ÖZELLİK ÇIKARIMI
-
-# Yaş değişkenini kategorilere ayırıp yeni yaş değişkeni oluşturulması
-df.loc[(df["Age"] >= 21) & (df["Age"] < 50), "NEW_AGE_CAT"] = "mature"
-df.loc[(df["Age"] >= 50), "NEW_AGE_CAT"] = "senior"
-
-df.head()
-
-# BMI 18,5 aşağısı underweight, 18.5 ile 24.9 arası normal, 24.9 ile 29.9 arası Overweight ve 30 üstü obez
-df['NEW_BMI'] = pd.cut(x=df['BMI'], bins=[0, 18.5, 24.9, 29.9, 100],labels=["Underweight", "Healthy", "Overweight", "Obese"])
-#literatur taramasından elde ettigimiz degerler.
-
-# Glukoz degerini kategorik değişkene çevirme
-df["NEW_GLUCOSE"] = pd.cut(x=df["Glucose"], bins=[0, 140, 200, 300], labels=["Normal", "Prediabetes", "Diabetes"])
-
-# # Yaş ve beden kitle indeksini bir arada düşünerek kategorik değişken oluşturma 3 kırılım yakalandı
-df.loc[(df["BMI"] < 18.5) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_BMI_NOM"] = "underweightmature"
-df.loc[(df["BMI"] < 18.5) & (df["Age"] >= 50), "NEW_AGE_BMI_NOM"] = "underweightsenior"
-df.loc[((df["BMI"] >= 18.5) & (df["BMI"] < 25)) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_BMI_NOM"] = "healthymature"
-df.loc[((df["BMI"] >= 18.5) & (df["BMI"] < 25)) & (df["Age"] >= 50), "NEW_AGE_BMI_NOM"] = "healthysenior"
-df.loc[((df["BMI"] >= 25) & (df["BMI"] < 30)) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_BMI_NOM"] = "overweightmature"
-df.loc[((df["BMI"] >= 25) & (df["BMI"] < 30)) & (df["Age"] >= 50), "NEW_AGE_BMI_NOM"] = "overweightsenior"
-df.loc[(df["BMI"] > 18.5) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_BMI_NOM"] = "obesemature"
-df.loc[(df["BMI"] > 18.5) & (df["Age"] >= 50), "NEW_AGE_BMI_NOM"] = "obesesenior"
-
-# Yaş ve Glikoz değerlerini bir arada düşünerek kategorik değişken oluşturma
-df.loc[(df["Glucose"] < 70) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_GLUCOSE_NOM"] = "lowmature"
-df.loc[(df["Glucose"] < 70) & (df["Age"] >= 50), "NEW_AGE_GLUCOSE_NOM"] = "lowsenior"
-df.loc[((df["Glucose"] >= 70) & (df["Glucose"] < 100)) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_GLUCOSE_NOM"] = "normalmature"
-df.loc[((df["Glucose"] >= 70) & (df["Glucose"] < 100)) & (df["Age"] >= 50), "NEW_AGE_GLUCOSE_NOM"] = "normalsenior"
-df.loc[((df["Glucose"] >= 100) & (df["Glucose"] <= 125)) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_GLUCOSE_NOM"] = "hiddenmature"
-df.loc[((df["Glucose"] >= 100) & (df["Glucose"] <= 125)) & (df["Age"] >= 50), "NEW_AGE_GLUCOSE_NOM"] = "hiddensenior"
-df.loc[(df["Glucose"] > 125) & ((df["Age"] >= 21) & (df["Age"] < 50)), "NEW_AGE_GLUCOSE_NOM"] = "highmature"
-df.loc[(df["Glucose"] > 125) & (df["Age"] >= 50), "NEW_AGE_GLUCOSE_NOM"] = "highsenior"
-
-# İnsulin Değeri ile Kategorik değişken türetmek
-def set_insulin(dataframe, col_name="Insulin"):
-    if 16 <= dataframe[col_name] <= 166:
-        return "Normal"
+    # Generate risk level
+    if probability[0] < 0.3:
+        risk_level = "Low"
+    elif probability[0] < 0.7:
+        risk_level = "Moderate"
     else:
-        return "Abnormal"
+        risk_level = "High"
 
-df["NEW_INSULIN_SCORE"] = df.apply(set_insulin, axis=1)
+    # Create feature importance interpretation
+    feature_importance = {
+        'Glucose': 'High glucose levels are strongly associated with diabetes risk.',
+        'BMI': 'Higher BMI increases diabetes risk, especially if over 30.',
+        'Age': 'Diabetes risk typically increases with age.',
+        'Insulin': 'Abnormal insulin levels can indicate insulin resistance or deficiency.',
+        'DiabetesPedigreeFunction': 'Family history is a significant factor in diabetes risk.',
+        'BloodPressure': 'Hypertension is often comorbid with diabetes.',
+        'Pregnancies': 'Multiple pregnancies can affect diabetes risk in women.',
+        'SkinThickness': 'Skin thickness can be an indicator of body composition.'
+    }
 
-df.head()
+    # Identify key factors for this prediction
+    if prediction[0] == 1:  # Diabetic
+        if df['Glucose'].values[0] > 125:
+            key_factors = ['High glucose level']
+        else:
+            key_factors = []
 
-df["NEW_GLUCOSE*Insulin"] = df["Glucose"] * df["Insulin"]
+        if df['BMI'].values[0] > 30:
+            key_factors.append('Elevated BMI')
 
-#sıfır olan değerler dikkat!
-#df["NEW_GLUCOSE*PREGNANCIES"] = df["Glucose"] * df["Pregnancies"]
-df["NEW_GLUCOSE*Pregnancies"] = df["Glucose"] * (1+ df["Pregnancies"])
+        if df['Age'].values[0] > 50:
+            key_factors.append('Age factor')
 
-df.head()
+        if df['DiabetesPedigreeFunction'].values[0] > 0.8:
+            key_factors.append('Strong family history')
+    else:  # Non-diabetic
+        key_factors = ['Normal glucose level', 'Healthy metrics']
 
-# Kolonların büyültülmesi
-#df.columns = [col.upper() for col in df.columns]
+    return {
+        "prediction": int(prediction[0]),
+        "probability": float(probability[0]),
+        "result": "Diabetic" if prediction[0] == 1 else "Non-Diabetic",
+        "confidence": f"{probability[0]*100:.2f}%" if prediction[0] == 1 else f"{(1-probability[0])*100:.2f}%",
+        "risk_level": risk_level,
+        "key_factors": key_factors
+    }
 
-df.head()
+def create_user_interface():
+    \"\"\"
+    Create a simple command-line interface for diabetes prediction
+    \"\"\"
+    print("\\n================================")
+    print("  Diabetes Prediction System")
+    print("================================\\n")
 
-# ENCODING
+    try:
+        pregnancies = int(input("Number of Pregnancies: "))
+        glucose = float(input("Glucose Level (mg/dL): "))
+        blood_pressure = float(input("Blood Pressure (mm Hg): "))
+        skin_thickness = float(input("Skin Thickness (mm): "))
+        insulin = float(input("Insulin Level (mu U/ml): "))
+        bmi = float(input("BMI: "))
+        diabetes_pedigree = float(input("Diabetes Pedigree Function: "))
+        age = int(input("Age: "))
 
-num_cols
-# Değişkenlerin tiplerine göre ayrılması işlemi
-cat_cols, num_cols, cat_but_car = grab_col_names(df)
+        user_data = {
+            'Pregnancies': pregnancies,
+            'Glucose': glucose,
+            'BloodPressure': blood_pressure,
+            'SkinThickness': skin_thickness,
+            'Insulin': insulin,
+            'BMI': bmi,
+            'DiabetesPedigreeFunction': diabetes_pedigree,
+            'Age': age
+        }
 
-# LABEL ENCODING
-def label_encoder(dataframe, binary_col):
-    labelencoder = LabelEncoder()
-    dataframe[binary_col] = labelencoder.fit_transform(dataframe[binary_col])
-    return dataframe
+        result = predict_diabetes(user_data)
 
-binary_cols = [col for col in df.columns if df[col].dtypes == "O" and df[col].nunique() == 2]
-binary_cols
+        print("\\n================================")
+        print("       Prediction Results        ")
+        print("================================")
+        print(f"Prediction: {result['result']}")
+        print(f"Confidence: {result['confidence']}")
+        print(f"Risk Level: {result['risk_level']}")
 
-for col in binary_cols:
-    df = label_encoder(df, col)
+        print("================================\\n")
 
-df.head()
+        return result
 
-# One-Hot Encoding İşlemi
-# cat_cols listesinin güncelleme işlemi
-# target değişkenimi cıkarıyorum.
-# bir de binary_cols, zaten daha öncesinde label encoder uygulamıstım.
-cat_cols = [col for col in cat_cols if col not in binary_cols and col not in ["OUTCOME"]]
-cat_cols
+    except Exception as e:
+        print(f"\\nError: {e}")
+        print("Please enter valid values and try again.")
+        return None
 
-def one_hot_encoder(dataframe, categorical_cols, drop_first=False):
-    dataframe = pd.get_dummies(dataframe, columns=categorical_cols, drop_first=drop_first)
-    return dataframe
+# Example usage
+if __name__ == "__main__":
+    # Example user input
+    test_data = {
+        'Pregnancies': 6,
+        'Glucose': 148,
+        'BloodPressure': 72,
+        'SkinThickness': 35,
+        'Insulin': 0,
+        'BMI': 33.6,
+        'DiabetesPedigreeFunction': 0.627,
+        'Age': 50
+    }
 
-df = one_hot_encoder(df, cat_cols, drop_first=True)
+    try:
+        result = predict_diabetes(test_data)
+        print("\\nDiabetes Prediction Results:")
+        print(f"Prediction: {result['result']}")
+        print(f"Probability: {result['probability']:.4f}")
+        print(f"Confidence: {result['confidence']}")
 
 
-df.head()
+    except Exception as e:
+        print(f"Error during prediction: {e}")
+    """)
 
-# STANDARTLAŞTIRMA
+        print("✅ Created prediction function file: 'predict_diabetes.py'")
 
-num_cols
+        return self
 
-scaler = StandardScaler() # ortalaması sıfır, standart sapması bir olacak sekilde standardize ediyor.
-df[num_cols] = scaler.fit_transform(df[num_cols])
+    def create_interactive_visualizations(self):
+        """Create interactive visualizations using Plotly"""
+        self.print_section_header("Interactive Visualizations")
 
-df.head()
-df.shape
+        print("🎨 Creating interactive visualizations...")
 
-df.describe()
+        # 1. Interactive feature importance
+        if self.feature_importance is not None:
+            fig = px.bar(
+                self.feature_importance,
+                x='Importance',
+                y='Feature',
+                orientation='h',
+                title='Feature Importance for Diabetes Prediction',
+                labels={'Importance': 'Importance Score', 'Feature': 'Feature'},
+                color='Importance',
+                color_continuous_scale='viridis'
+            )
 
-df.shape
+            fig.update_layout(
+                height=600,
+                width=900,
+                template='plotly_white',
+                yaxis={'categoryorder': 'total ascending'}
+            )
 
-# MODELLEME
+            fig.show()
 
-# Feature Engineering ardından model basarısını degerlendirelim.
+        # 2. Interactive correlation heatmap
+        corr_matrix = self.df.corr()
 
-df.head()
-df.columns
+        fig = px.imshow(
+            corr_matrix,
+            text_auto='.2f',
+            aspect='auto',
+            color_continuous_scale='RdBu_r',
+            title='Interactive Correlation Matrix'
+        )
 
-diabet_rf_model = RandomForestClassifier(random_state=46).fit(X_train, y_train)
-y_pred = diabet_rf_model.predict(X_test)
+        fig.update_layout(
+            height=800,
+            width=800,
+            template='plotly_white'
+        )
 
-print(f"Accuracy: {round(accuracy_score(y_pred, y_test), 2)}")
-print(f"Recall: {round(recall_score(y_pred,y_test),3)}")
-print(f"Precision: {round(precision_score(y_pred,y_test), 2)}")
-print(f"F1: {round(f1_score(y_pred,y_test), 2)}")
-print(f"Auc: {round(roc_auc_score(y_pred,y_test), 2)}")
+        fig.show()
 
-# Accuracy: 0.79
-# Recall: 0.711
-# Precision: 0.67
-# F1: 0.69
-# Auc: 0.77
+        # 3. Interactive scatter plot matrix of key features
+        top_features = self.df.corr()['Outcome'].abs().sort_values(ascending=False).index[:4].tolist()
 
-# Base Model
-# Accuracy: 0.77
-# Recall: 0.706
-# Precision: 0.59
-# F1: 0.64
-# Auc: 0.75
+        fig = px.scatter_matrix(
+            self.df,
+            dimensions=top_features,
+            color='Outcome',
+            color_discrete_map={0: '#2ecc71', 1: '#e74c3c'},
+            title='Scatter Matrix of Key Features',
+            labels={col: col for col in top_features}
+        )
 
-# FEATURE IMPORTANCE
+        fig.update_layout(
+            height=800,
+            width=900,
+            template='plotly_white'
+        )
 
-def plot_importance(model, features, num=len(X), save=False):
-    feature_imp = pd.DataFrame({'Value': model.feature_importances_, 'Feature': features.columns})
-    print(feature_imp.sort_values("Value",ascending=False))
-    plt.figure(figsize=(10, 10))
-    sns.set(font_scale=1)
-    sns.barplot(x="Value", y="Feature", data=feature_imp.sort_values(by="Value",
-                                                                     ascending=False)[0:num])
-    plt.title('Features')
-    plt.tight_layout()
-    plt.show()
-    if save:
-        plt.savefig('importances.png')
+        fig.show()
 
-plot_importance(rf_model, X)
+        # 4. Interactive distribution plots
+        for feature in ['Glucose', 'BMI', 'Age', 'DiabetesPedigreeFunction']:
+            fig = px.histogram(
+                self.df,
+                x=feature,
+                color='Outcome',
+                marginal='box',
+                color_discrete_map={0: '#2ecc71', 1: '#e74c3c'},
+                title=f'Distribution of {feature} by Diabetes Outcome',
+                labels={feature: feature, 'Outcome': 'Diabetes Outcome'},
+                barmode='overlay',
+                opacity=0.7
+            )
 
-#Modelleri Kaydetme
-joblib.dump(diabet_rf_model, "diabet_rf_model.pkl") #Random Forest
+            fig.update_layout(
+                height=500,
+                width=900,
+                template='plotly_white',
+                legend_title_text='Diabetes Outcome',
+                xaxis_title=feature,
+                yaxis_title='Count'
+            )
 
-# Modelin eğitirken kullanılan verinin sütunlarını almak
-diabet_training_columns = list(X.columns)
+            fig.show()
 
-# Sütun isimlerini bir .pkl dosyasına kayıt etmek
-with open("diabet_training_columns.pkl", "wb") as f:
-    joblib.dump(diabet_training_columns, f)
+        # 5. Interactive ROC curve
+        if hasattr(self, 'model') and self.model is not None:
+            y_pred_proba = self.model.predict_proba(self.X_test_scaled)[:, 1]
+            fpr, tpr, thresholds = roc_curve(self.y_test, y_pred_proba)
+            roc_auc = auc(fpr, tpr)
 
-print(diabet_training_columns)
+            # Create a DataFrame for the plot
+            roc_df = pd.DataFrame({
+                'False Positive Rate': fpr,
+                'True Positive Rate': tpr,
+                'Threshold': thresholds
+            })
+
+            fig = px.line(
+                roc_df,
+                x='False Positive Rate',
+                y='True Positive Rate',
+                title=f'ROC Curve (AUC = {roc_auc:.4f})',
+                line_shape='spline',
+                hover_data=['Threshold'],
+                labels={'False Positive Rate': 'False Positive Rate', 'True Positive Rate': 'True Positive Rate'}
+            )
+
+            # Add a diagonal reference line
+            fig.add_shape(
+                type='line',
+                line=dict(dash='dash', color='gray'),
+                x0=0, y0=0, x1=1, y1=1
+            )
+
+            fig.update_layout(
+                height=600,
+                width=800,
+                template='plotly_white',
+                xaxis=dict(
+                    title='False Positive Rate',
+                    range=[0, 1],
+                    constrain='domain'
+                ),
+                yaxis=dict(
+                    title='True Positive Rate',
+                    range=[0, 1],
+                    scaleanchor="x",
+                    scaleratio=1,
+                    constrain='domain'
+                )
+            )
+
+            fig.show()
+
+        # 6. 3D scatter plot of top 3 features
+        if len(top_features) >= 3:
+            fig = px.scatter_3d(
+                self.df,
+                x=top_features[0],
+                y=top_features[1],
+                z=top_features[2],
+                color='Outcome',
+                color_discrete_map={0: '#2ecc71', 1: '#e74c3c'},
+                title=f'3D Scatter Plot of Top 3 Features',
+                labels={
+                    top_features[0]: top_features[0],
+                    top_features[1]: top_features[1],
+                    top_features[2]: top_features[2],
+                    'Outcome': 'Diabetes Outcome'
+                }
+            )
+
+            fig.update_layout(
+                height=800,
+                width=900,
+                template='plotly_white'
+            )
+
+            fig.show()
+
+        return self
+
+    def run_analysis(self, do_hyperparameter_tuning=False):
+        """Run the entire analysis pipeline"""
+        self.print_section_header("Starting Diabetes Prediction Analysis")
+
+        start_time = time.time()
+
+        # Run all steps
+        self.load_data()
+        self.visualize_data_distributions()
+        self.analyze_correlations()
+        self.preprocess_data()
+        self.feature_selection_analysis()
+        self.train_model()
+
+        if do_hyperparameter_tuning:
+            self.hyperparameter_tuning(quick=True)
+
+        self.evaluate_model()
+        self.analyze_misclassifications()
+        self.create_prediction_function()
+        self.create_interactive_visualizations()
+
+        total_time = time.time() - start_time
+
+        self.print_section_header("Analysis Complete")
+        print(f"✅ Total time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+        print("✅ All analysis steps completed successfully")
+        print("✅ Trained model saved as 'diabetes_model.pkl'")
+        print("✅ Prediction function saved as 'predict_diabetes.py'")
+
+        if do_hyperparameter_tuning:
+            print("✅ Tuned model saved as 'diabetes_model_tuned.pkl'")
+
+        print("\n🚀 You can now use the prediction function to make diabetes predictions!")
+
+        return self
+
+
+# Run the entire analysis
+if __name__ == "__main__":
+    # Check if we're running in Google Colab
+    try:
+        import google.colab
+        in_colab = True
+    except ImportError:
+        in_colab = False
+
+    # Inform the user
+    if in_colab:
+        print("Running in Google Colab environment")
+    else:
+        print("Running in local environment")
+
+    # Set plot style for better visualization in Colab
+    if in_colab:
+        plt.style.use('fivethirtyeight')
+        sns.set_context("notebook", font_scale=1.2)
+
+    # Create and run the analysis pipeline
+    analyzer = DiabetesPredictionAnalysis("diabetes.csv")
+    analyzer.run_analysis(do_hyperparameter_tuning=True)
+
+    # Example of making a prediction
+    print("\n🔮 Example Prediction:")
+    try:
+        #from predict_diabetes import predict_diabetes
+
+        test_data = {
+            'Pregnancies': 10,
+            'Glucose': 115,
+            'BloodPressure': 0,
+            'SkinThickness': 0,
+            'Insulin': 0,
+            'BMI': 35.3,
+            'DiabetesPedigreeFunction': 0.134,
+            'Age': 29
+        }
+
+        result = predict_diabetes(test_data)
+
+        print("\n========================================")
+        print("        Diabetes Prediction Result")
+        print("========================================")
+        print(f"Prediction: {result['result']}")
+        print(f"Confidence: {result['confidence']}")
+        print("========================================")
+    except Exception as e:
+        print(f"Error making example prediction: {e}")
